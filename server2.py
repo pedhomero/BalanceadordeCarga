@@ -3,7 +3,7 @@ import time
 
 app = Flask(__name__)
 
-INSTANCE_NAME = "servidor1"
+INSTANCE_NAME = "servidor2"  
 
 @app.route("/")
 def index():
@@ -12,4 +12,4 @@ def index():
         "time": time.time()
     })
 
-app.run(port=8001)
+app.run(port=8002)
