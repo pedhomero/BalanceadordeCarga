@@ -1,87 +1,112 @@
-from flask import Flask, jsonify
+import os
 import requests
-import threading
+import time
+from flask import Flask, jsonify
 
 app = Flask(__name__)
 
-# Servidores registrados
+# Lista de servidores backend
 SERVERS = [
-    {"url": "http://127.0.0.1:8001", "active": True, "connections": 0},
-    {"url": "http://127.0.0.1:8002", "active": True, "connections": 0},
-    {"url": "http://127.0.0.1:8003", "active": True, "connections": 0},
+    {"url": "http://127.0.0.1:8001", "up": True, "connections": 0},
+    {"url": "http://127.0.0.1:8002", "up": True, "connections": 0},
+    {"url": "http://127.0.0.1:8003", "up": True, "connections": 0},
 ]
 
-ALGORITHM = "round_robin"  
+# ÍNDICE para Round Robin
 rr_index = 0
-lock = threading.Lock()
-timeout = 1 
+
+# Escolha do algoritmo por variável de ambiente
+ALGORITHM = os.getenv("ALGORITMO", "ROUND_ROBIN").upper()
+
+print(f"[BALANCEADOR] Algoritmo selecionado: {ALGORITHM}")
+
+# -----------------------------
+# Função para checar se servidores estão vivos
+# -----------------------------
+def health_check():
+    for server in SERVERS:
+        try:
+            requests.get(server["url"], timeout=0.5)
+            if not server["up"]:
+                print(f"[RECUPERADO] {server['url']} voltou!")
+            server["up"] = True
+        except:
+            if server["up"]:
+                print(f"[CAIU] {server['url']} ficou indisponível!")
+            server["up"] = False
 
 
-
-
-def pick_server_round_robin():
+# -----------------------------
+# Algoritmo: Round Robin
+# -----------------------------
+def get_server_round_robin():
     global rr_index
-    with lock:
-        active = [s for s in SERVERS if s["active"]]
-        if not active:
-            return None
-        chosen = active[rr_index % len(active)]
-        rr_index += 1
-        return chosen
+    alive = [s for s in SERVERS if s["up"]]
 
-
-def pick_server_least_conn():
-    active = [s for s in SERVERS if s["active"]]
-    if not active:
+    if not alive:
         return None
-    return min(active, key=lambda s: s["connections"])
+
+    server = alive[rr_index % len(alive)]
+    rr_index += 1
+    return server
 
 
-def pick_server():
-    if ALGORITHM == "round_robin":
-        return pick_server_round_robin()
-    else:
-        return pick_server_least_conn()
+# -----------------------------
+# Algoritmo: Least Connections
+# -----------------------------
+def get_server_least_connections():
+    alive = [s for s in SERVERS if s["up"]]
+
+    if not alive:
+        return None
+
+    # escolhe o servidor com MENOS conexões
+    return min(alive, key=lambda s: s["connections"])
 
 
-
-
+# -----------------------------
+# Rota principal do balanceador
+# -----------------------------
 @app.route("/")
-def root():
-    server = pick_server()
+def balancear():
+    health_check()
 
-    if server is None:
-        return jsonify({"error": "Nenhum servidor disponível"}), 503
+    # Seleciona algoritmo
+    if ALGORITHM == "LEAST_CONNECTIONS":
+        server = get_server_least_connections()
+    else:
+        server = get_server_round_robin()
 
-    # Incrementa conexões
+    if not server:
+        return jsonify({"erro": "Nenhum servidor disponível"}), 503
+
+    # Incrementa conexões ativas
     server["connections"] += 1
 
+    print(f"[REQUISIÇÃO] Enviando para {server['url']}  | conexões: {server['connections']}")
+
     try:
-        r = requests.get(server["url"], timeout=timeout)
-        server["connections"] -= 1
-        return r.text, r.status_code, r.headers.items()
-
+        response = requests.get(server["url"], timeout=2)
+        data = response.json()
     except:
-        # Marca como inativo se der falha
-        server["active"] = False
+        server["up"] = False
+        print(f"[ERRO] {server['url']} falhou durante requisição")
         server["connections"] -= 1
-        return jsonify({"error": "Falha ao acessar " + server["url"]}), 503
+        return jsonify({"erro": "Falha ao conectar ao servidor"}), 503
+
+    # Libera a conexão
+    server["connections"] -= 1
+
+    return jsonify({
+        "balanceador": "ok",
+        "algoritmo": ALGORITHM,
+        "resposta_do_servidor": data
+    })
 
 
-@app.route("/status")
-def status():
-    return jsonify(SERVERS)
-
-
-@app.route("/set_algorithm/<alg>")
-def set_alg(alg):
-    global ALGORITHM
-
-    if alg not in ["round_robin", "least_conn"]:
-        return "Algoritmo inválido!"
-
-    ALGORITHM = alg
-    return f"Algoritmo definido como {alg}"
-
-
-app.run(port=8080)
+# -----------------------------
+# Inicia o balanceador
+# -----------------------------
+if __name__ == "__main__":
+    print("[BALANCEADOR] Rodando em http://127.0.0.1:8080")
+    app.run(port=8080)
